@@ -6,6 +6,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
+using System.Drawing.Imaging;
 using System.IO;
 using System.Threading.Tasks;
 using System.Windows.Forms;
@@ -32,15 +33,19 @@ namespace SonoScapeDicom
         #region dcmfile
 
         DicomFile file;
+        DicomTransferSyntax originalTransferSyntax;
         DicomImage img;
         ImageList imglist = new ImageList();
         List<DicomItem> itemarray = new List<DicomItem>();
         private async Task openFile(string filename)
         {
             setToolstripText("Loading file...");
+            Application.DoEvents();
             var stopwatch = new Stopwatch();
             stopwatch.Start();
             file = await DicomFile.OpenAsync(filename);
+            originalTransferSyntax = file.Dataset.InternalTransferSyntax;
+            // file = file.Clone(DicomTransferSyntax.ExplicitVRLittleEndian);
             initImage();
             loadDataset();
             initFrameList();
@@ -70,11 +75,11 @@ namespace SonoScapeDicom
             }
             if (string.IsNullOrEmpty(file.Dataset.InternalTransferSyntax.LossyCompressionMethod))
             {
-                toolStripStatusLabel2.Text = $"Transfer Syntax: {file.Dataset.InternalTransferSyntax.UID.Name} [{file.Dataset.InternalTransferSyntax.UID.UID}]";
+                toolStripStatusLabel2.Text = $"Transfer Syntax: {originalTransferSyntax.UID.Name} [{originalTransferSyntax.UID.UID}]";
             }
             else
             {
-                toolStripStatusLabel2.Text = $"Transfer Syntax: {file.Dataset.InternalTransferSyntax.LossyCompressionMethod} - {file.Dataset.InternalTransferSyntax.UID.Name} [{file.Dataset.InternalTransferSyntax.UID.UID}]";
+                toolStripStatusLabel2.Text = $"Transfer Syntax: {originalTransferSyntax.LossyCompressionMethod} - {originalTransferSyntax.UID.Name} [{originalTransferSyntax.UID.UID}]";
             }
         }
 
@@ -88,7 +93,7 @@ namespace SonoScapeDicom
             listView2.BeginUpdate();
             for (int i = 0; i < img.NumberOfFrames; i++)
             {
-                imglist.Images.Add(img.RenderImage(i).AsBitmap());
+                // imglist.Images.Add(img.RenderImage(i).AsBitmap());
                 var lvi = new ListViewItem
                 {
                     ImageIndex = i,
@@ -105,9 +110,21 @@ namespace SonoScapeDicom
             setToolstripText("Rendering...");
             try
             {
-                var image = img.RenderImage(frame).AsBitmap();
-                Image imgs = Image.FromHbitmap(image.GetHbitmap());
-                pictureBox1.Image = imgs;
+                Bitmap bitmap;
+                using(var image = img.RenderImage(frame))
+                {
+                    using(var stream = new MemoryStream())
+                    {
+                        using(var bmp = image.AsBitmap())
+                        {
+                            bmp.Save(stream, ImageFormat.Bmp);
+                            bitmap = new Bitmap(stream);
+                        }
+                    }
+                }
+                GC.Collect();
+                
+                pictureBox1.Image = bitmap;
                 pictureBox1.SizeMode = PictureBoxSizeMode.Zoom;
                 pictureBox1.Refresh();
                 setToolstripText($"Current Frame: {frame}");
@@ -158,6 +175,7 @@ namespace SonoScapeDicom
             if (result == DialogResult.OK)
             {
                 var fname = saveFileDialog.FileName;
+                // var fileEncode = file.Clone(originalTransferSyntax);
                 await file.SaveAsync(fname);
                 MessageBox.Show($"File successfully saved in {fname}", PROGRAM_NAME, MessageBoxButtons.OK, MessageBoxIcon.Information);
                 setToolstripText($"File saved in {Path.GetFileName(fname)}.");
@@ -220,14 +238,12 @@ namespace SonoScapeDicom
                         }
                     }
 
-                    byte[] pixels = ImageUtil.GetPixels(bitmap);
-
-                    //TODO: very bad perfomance, needs improvement
-                    var fileDecode = file.Clone(DicomTransferSyntax.ExplicitVRLittleEndian);
-                    var pixelData = DicomPixelData.Create(fileDecode.Dataset);
-                    var buffer = new MemoryByteBuffer(pixels);
+                    var pixelData = DicomPixelData.Create(file.Dataset);
+                    MemoryStream encodeImg = new MemoryStream();
+                    //TODO: change ImageFormat from TransferSyntax
+                    bitmap.Save(encodeImg, ImageFormat.Jpeg);
+                    var buffer = new MemoryByteBuffer(encodeImg.GetBuffer());
                     pixelData.AddFrame(buffer);
-                    file = fileDecode.Clone(file.Dataset.InternalTransferSyntax);
 
                     initImage();
                     initFrameList();
